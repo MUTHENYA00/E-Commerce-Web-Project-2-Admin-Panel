@@ -1,332 +1,245 @@
 <script setup>
-import { ref, onMounted, watch } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 
+import ProductForm from '../components/ProductForm.vue'
+import ProductTable from '../components/ProductTable.vue'
 
+import {
+  deleteProduct as deleteProductRequest,
+  normalizeProductPayload,
+  updateProduct
+} from '../services/productService'
+
+import { getCategoryList, getProductImage, getProductName } from '../utils/helpers'
+
+/* ---------------- STATE ---------------- */
 const products = ref([])
-const loading = ref(true)
+const page = ref(1)
+const limit = 20
+
+const totalProducts = ref(0)
+
+const loading = ref(false)
+const saving = ref(false)
+
+const error = ref('')
+const message = ref('')
+
+const search = ref('')
+const categoryFilter = ref('all')
 
 const editMode = ref(false)
 const editId = ref(null)
+const editForm = ref(createBlankForm())
 
-const editName = ref('')
-const editPrice = ref('')
-const editImage = ref('')
-const editDescription = ref('')
-const editCategory = ref('')
-const editBeforePrice = ref('')
-const editDiscountedPrice = ref('')
-const editIsDeal = ref(false)
+/* ---------------- COMPUTED ---------------- */
+const categories = computed(() => getCategoryList(products.value))
 
+const filteredProducts = computed(() => {
+  const term = search.value.trim().toLowerCase()
+
+  return products.value.filter((p) => {
+    const matchesSearch =
+      !term ||
+      getProductName(p).toLowerCase().includes(term) ||
+      String(p.category || '').toLowerCase().includes(term)
+
+    const matchesCategory =
+      categoryFilter.value === 'all' ||
+      p.category === categoryFilter.value
+
+    return matchesSearch && matchesCategory
+  })
+})
+
+/* ---------------- FETCH ---------------- */
+async function fetchProducts() {
+  loading.value = true
+  error.value = ''
+
+  try {
+    const params = new URLSearchParams({
+      page: page.value,
+      limit
+    })
+
+    const res = await fetch(`http://localhost:3000/api/products?=${params}`)
+    const data = await res.json()
+
+    products.value = Array.isArray(data) ? data : []
+
+  } catch (err) {
+    error.value = err.message
+  } finally {
+    loading.value = false
+  }
+}
+
+/* ---------------- TOTAL ---------------- */
+async function fetchTotal() {
+  try {
+    const res = await fetch('http://localhost:3000/api/products/count')
+    const data = await res.json()
+    totalProducts.value = data?.total || 0
+  } catch {
+    totalProducts.value = 0
+  }
+}
+
+/* ---------------- SEARCH + FILTER RESET ---------------- */
+watch([search, categoryFilter], () => {
+  page.value = 1
+
+})
+
+/* ---------------- PAGINATION ---------------- */
+function nextPage() {
+  if (products.value.length === limit) {
+    page.value++
+    fetchProducts()
+  }
+}
+
+function prevPage() {
+  if (page.value > 1) {
+    page.value--
+    fetchProducts()
+  }
+}
+
+/* ---------------- EDIT ---------------- */
 function startEdit(p) {
   editMode.value = true
   editId.value = p.id
+  message.value = ''
 
-  editName.value = p.product_name
-  editPrice.value = p.price
-  editImage.value = p.image_path
-  editDescription.value = p.description
-  editCategory.value = p.category
-  editBeforePrice.value = p.before_price
-  editDiscountedPrice.value = p.discounted_price
-  editIsDeal.value = p.is_deal
-}
-
-
-async function fetchProducts() {
-  const res = await fetch('http://localhost:3000/api/products')
-  products.value = await res.json()
-}
-
-onMounted(async () => {
-  await fetchProducts()
-  loading.value = false
-})
-async function deleteProduct(id) {
-  try {
-    await fetch(`http://localhost:3000/api/products/${id}`, {
-      method: 'DELETE'
-    })
-
-    // ONLY THIS (single source of truth)
-    await fetchProducts()
-
-  } catch (err) {
-    console.error("Delete error:", err)
+  editForm.value = {
+    product_name: getProductName(p),
+    description: p.description || '',
+    price: p.price || '',
+    image_path: getProductImage(p),
+    category: p.category || '',
+    before_price: p.before_price || '',
+    discounted_price: p.discounted_price || '',
+    is_deal: Boolean(p.is_deal),
+    image_file: null
   }
 }
-// save products 
-async function saveUpdate() {
+
+/* ---------------- ACTIONS ---------------- */
+async function deleteProduct(id) {
+  if (!confirm('Delete this product?')) return
+
   try {
-    const res = await fetch(`http://localhost:3000/api/products/${editId.value}`, {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        product_name: editName.value,
-        description: editDescription.value,
-        price: Number(editPrice.value),
-        image_path: editImage.value.replace(/\\/g, '/'),
-        category: editCategory.value,
-        before_price: Number(editBeforePrice.value),
-        discounted_price: Number(editDiscountedPrice.value),
-        is_deal: editIsDeal.value
-      })
-    })
+    await deleteProductRequest(id)
+    message.value = 'Product deleted successfully.'
+    await fetchProducts()
+    await fetchTotal()
+  } catch (err) {
+    error.value = err.message
+  }
+}
 
-    if (!res.ok) throw new Error("Update failed")
+async function saveUpdate() {
+  saving.value = true
+  error.value = ''
 
-    await fetchProducts() // refresh UI
+  try {
+    await updateProduct(editId.value, normalizeProductPayload(editForm.value))
 
+    message.value = 'Product updated successfully.'
     editMode.value = false
 
+    await fetchProducts()
   } catch (err) {
-    console.error(err)
+    error.value = err.message
+  } finally {
+    saving.value = false
+  }
+}
+
+/* ---------------- INIT ---------------- */
+onMounted(() => {
+  fetchProducts()
+  fetchTotal()
+})
+
+function createBlankForm() {
+  return {
+    product_name: '',
+    description: '',
+    price: '',
+    image_path: '',
+    category: '',
+    before_price: '',
+    discounted_price: '',
+    is_deal: false,
+    image_file: null
   }
 }
 </script>
-
 <template>
-  <div class="page">
+  <section class="page">
+    <header class="page-header">
+      <div>
+        <p class="eyebrow">Catalog</p>
+        <h1>Products</h1>
+        <p class="muted">Manage inventory, deals, prices, and product media.</p>
+      </div>
+      <router-link to="/add" class="button">+ Add Product</router-link>
+    </header>
 
-    <h1 class="title">Products</h1>
+    <div v-if="message" class="notice success">{{ message }}</div>
+    <div v-if="error" class="notice error">{{ error }}</div>
 
-    <p v-if="loading">Loading...</p>
+    <section class="panel">
+      <div class="panel-header">
+        <div>
+          <h2>Product List</h2>
+          <p class="muted">{{ filteredProducts.length }} of {{ totalProducts }} products</p>
+        </div>
 
-    <table v-else class="table">
+        <div class="toolbar">
+          <input v-model="search" class="search-input" placeholder="Search products" />
+          <select v-model="categoryFilter" class="search-input">
+            <option value="all">All categories</option>
+            <option v-for="category in categories" :key="category" :value="category">
+              {{ category }}
+            </option>
+          </select>
+        </div>
+      </div>
 
-      <thead>
-        <tr>
-          <th>Image</th>
-          <th>Name</th>
-          <th>Price</th>
-          <th>ID</th>
-          <th>Actions</th>
-        </tr>
-      </thead>
+      <div v-if="loading" class="empty-state">Loading products...</div>
+      <div v-else-if="!filteredProducts.length" class="empty-state">No products found.</div>
+      <ProductTable
+        v-else
+        :products="filteredProducts"
+        @delete="deleteProduct"
+        @edit="startEdit"
+      />
+    </section>
 
-      <tbody>
-        <tr v-for="p in products" :key="p.id">
+    <div v-if="editMode" class="drawer-overlay" @click.self="editMode = false">
+      <div class="drawer">
+        <div>
+          <p class="eyebrow">Product editor</p>
+          <h2>Edit Product</h2>
+        </div>
 
-        <td>
-  <img :src="`http://localhost:3000${p.image_path}`" />
-    </td>
+        <ProductForm
+          v-model="editForm"
+          :loading="saving"
+          loading-label="Saving..."
+          submit-label="Save Changes"
+          @reset="editMode = false"
+          @submit="saveUpdate"
+        />
+      </div>
+    </div>
+  </section>
 
-<td>{{ p.product_name }}</td>
-
-<td>Ksh {{ p.price }}</td>
-          <td>{{ p.id }}</td>
-
-          <td>
-           <button class="delete" @click="deleteProduct(p.id)">
-  Delete
-</button>
-            <button class="edit" @click="startEdit(p)">
-  Edit
-</button>
-          </td>
-
-        </tr>
-      </tbody>
-
-    </table>
-  </div>
-<div v-if="editMode" class="edit-overlay">
-  <div class="edit-sidebar">
-    
-    <h2>Edit Product</h2>
-
-    <input v-model="editName" placeholder="Name" />
-    <textarea v-model="editDescription" placeholder="Description"></textarea>
-
-    <input v-model="editPrice" type="number" placeholder="Price" />
-    <input v-model="editBeforePrice" type="number" placeholder="Before Price" />
-    <input v-model="editDiscountedPrice" type="number" placeholder="Discounted Price" />
-
-    <input v-model="editCategory" placeholder="Category" />
-    <input v-model="editImage" placeholder="Image Path" />
-
-    <label>
-      <input type="checkbox" v-model="editIsDeal" />
-      Is Deal Product
-    </label>
-
-    <div class="actions">
-  <button class="save" @click="saveUpdate">Save</button>
-  <button class="cancel" @click="editMode = false">Cancel</button>
-</div>
-
-
-  </div>
- 
-</div>
-
-
+  <button @click="prevPage">Prev</button>
+<button @click="nextPage">Next</button>
+<p>Page {{ page }}</p>
 </template>
-<style>
-.card {
-  background: white;
-  padding: 15px;
-  margin: 10px 0;
-  border-radius: 10px;
-  box-shadow: 0 2px 6px rgba(0,0,0,0.08);
-  display: flex;
-  align-items: center;
-  gap: 15px;
-}
-
-.card img {
-  width: 80px;
-  height: 80px;
-  object-fit: cover;
-  border-radius: 8px;
-}
-
-.page {
-  padding: 10px;
-}
-
-.title {
-  color: #0d47a1;
-  margin-bottom: 15px;
-}
-
-.table {
-  width: 100%;
-  border-collapse: collapse;
-  background: white;
-  border-radius: 10px;
-  overflow: hidden;
-  box-shadow: 0 3px 10px rgba(0,0,0,0.08);
-}
-
-.table th {
-  background: #0d47a1;
-  color: white;
-  padding: 12px;
-  text-align: left;
-}
-
-.table td {
-  padding: 12px;
-  border-bottom: 1px solid #eee;
-}
-
-.table img {
-  width: 50px;
-  height: 50px;
-  object-fit: cover;
-  border-radius: 6px;
-}
-
-button {
-  margin-right: 5px;
-  padding: 6px 10px;
-  border: none;
-  border-radius: 5px;
-  cursor: pointer;
-}
-
-.delete {
-  background: #e53935;
-  color: white;
-}
-
-.edit {
-  background: #fbc02d;
-  color: black;
-}
-
-.delete:hover {
-  background: #c62828;
-}
-
-.edit:hover {
-  background: #f9a825;
-}
-
-/* dark overlay */
-.edit-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  background: rgba(0,0,0,0.4);
-  display: flex;
-  justify-content: flex-end;
-  z-index: 999;
-}
-
-/* sidebar */
-.edit-sidebar {
-  width: 420px;
-  height: 100%;
-  background: white;
-  padding: 20px;
-  box-shadow: -5px 0 20px rgba(0,0,0,0.2);
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  animation: slideIn 0.25s ease;
-  backdrop-filter: blur(5px);
-}
-
-/* animation */
-@keyframes slideIn {
-  from {
-    transform: translateX(100%);
-  }
-  to {
-    transform: translateX(0);
-  }
-}
-
-/* inputs */
-.edit-sidebar input,
-.edit-sidebar textarea {
-  padding: 10px;
-  border: 1px solid #ddd;
-  border-radius: 6px;
-  outline: none;
-}
-
-.edit-sidebar input:focus,
-.edit-sidebar textarea:focus {
-  border-color: #0d47a1;
-}
-
-/* buttons */
-.actions {
-  display: flex;
-  justify-content: space-between;
-  margin-top: 10px;
-}
-
-.save {
-  background: #0d47a1;
-  color: white;
-  padding: 10px;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-}
-
-.cancel {
-  background: #e53935;
-  color: white;
-  padding: 10px;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-}
-
-.save:hover {
-  background: #1565c0;
-}
-
-.cancel:hover {
-  background: #c62828;
-}
-
-</style>
